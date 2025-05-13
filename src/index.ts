@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { env } from "./env.js";
 import { app } from "./server.js";
 import { logger } from "./logger/logger.js";
+import { handleWebhookEvent } from "./handlers/webhook/webhook.handler.js";
 
 app.get("/", (c) => {
   return c.text("Hello, World!");
@@ -29,6 +30,7 @@ app.get("/webhook", (c) => {
 app.post("/webhook", async (context) => {
   const body = await context.req.json();
   // TODO: Handle the incoming webhook event
+  handleWebhookEvent(body);
   return context.text("EVENT_RECEIVED", 200);
 });
 
