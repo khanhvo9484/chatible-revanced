@@ -4,13 +4,12 @@ services:
   postgres:
     image: postgres:latest
     container_name: postgres
-    restart: always
     environment:
-      POSTGRES_USER: admin
+      POSTGRES_USER: kzadmin
       POSTGRES_PASSWORD: secretpassword
-      POSTGRES_DB: postgresdb
+      POSTGRES_DB: kzdb
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 

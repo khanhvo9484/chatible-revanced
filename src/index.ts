@@ -3,6 +3,8 @@ import { env } from "./env.js";
 import { app } from "./server.js";
 import { logger } from "./logger/logger.js";
 import { handleWebhookEvent } from "./handlers/webhook/webhook.handler.js";
+import type { WebhookPayload } from "./interfaces/webhook-payload.js";
+import { setupMenu } from "./services/setup-menu.service.js";
 
 app.get("/", (c) => {
   return c.text("Hello, World!");
@@ -28,9 +30,9 @@ app.get("/webhook", (c) => {
 });
 
 app.post("/webhook", async (context) => {
-  const body = await context.req.json();
-  // TODO: Handle the incoming webhook event
-  handleWebhookEvent(body);
+  const body = await context.req.json<WebhookPayload>();
+
+  await handleWebhookEvent(body);
   return context.text("EVENT_RECEIVED", 200);
 });
 
@@ -41,5 +43,12 @@ serve(
   },
   (info) => {
     logger.info(`Server is running on port:${info.port}`);
+    setupMenu()
+      .then(() => {
+        logger.info("Menu setup completed");
+      })
+      .catch((error) => {
+        logger.error("Error setting up menu:", error);
+      });
   }
 );
