@@ -10,6 +10,9 @@ export interface Messaging {
     mid: string;
     text: string;
     attachments?: any[];
+    quick_reply?: {
+      payload: string;
+    };
   };
   postback?: {
     payload: string;
@@ -31,7 +34,7 @@ export interface WebhookPayload {
 
 export type MessageType =
   | "text"
-  | "postback"
+  | "command"
   | "image"
   | "sticker"
   | "audio"

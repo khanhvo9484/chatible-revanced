@@ -1,6 +1,8 @@
 import { apiClient } from "src/api/index.js";
-import { env } from "src/env.js";
-import { TEXT_COMMAND } from "src/models/text-command.model.js";
+import {
+  PERSISTENT_MENU,
+  TEXT_COMMAND,
+} from "src/models/text-command.model.js";
 
 async function setupGetStartedButton() {
   await apiClient.post("/messenger_profile", {
@@ -11,32 +13,7 @@ async function setupGetStartedButton() {
 }
 
 async function setupPersistentMenu() {
-  await apiClient.post("/messenger_profile", {
-    persistent_menu: [
-      {
-        locale: "default",
-        composer_input_disabled: false,
-        call_to_actions: [
-          {
-            type: "postback",
-            title: "Get Started",
-            payload: TEXT_COMMAND.GET_STARTED,
-          },
-        ],
-      },
-    ],
-  });
-}
-
-function setUpGreetingText() {
-  return apiClient.post("/messenger_profile", {
-    greeting: [
-      {
-        locale: "default",
-        text: "Xin chào, ấn Bắt đầu để trò chuyện",
-      },
-    ],
-  });
+  await apiClient.post("/messenger_profile", PERSISTENT_MENU);
 }
 
 export async function setupMenu() {

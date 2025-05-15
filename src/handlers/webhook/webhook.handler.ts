@@ -8,7 +8,7 @@ import { textHandler } from "./text-message.handler.js";
 import { logger } from "src/logger/logger.js";
 
 const messageHandlers = {
-  postback: (payload: Messaging) => commandHandler(payload),
+  command: (payload: Messaging) => commandHandler(payload),
   text: (payload: Messaging) => textHandler(payload),
   image: (payload: Messaging) => commandHandler(payload),
   sticker: (payload: Messaging) => commandHandler(payload),
@@ -46,8 +46,8 @@ function getMessageType(messaging: Messaging | undefined): MessageType {
     return "unknown";
   }
 
-  if (messaging.postback) {
-    return "postback";
+  if (messaging.postback || messaging?.message?.quick_reply) {
+    return "command";
   }
 
   if (messaging.message) {

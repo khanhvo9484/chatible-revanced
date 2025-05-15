@@ -1,70 +1,21 @@
-import { eq } from "drizzle-orm";
-import { db } from "src/database/db.js";
 import { redis } from "src/database/redis.js";
-import { sessions } from "src/database/schema.js";
 import type { Messaging } from "src/interfaces/webhook-payload.js";
 import { logger } from "src/logger/logger.js";
-import { TEXT_COMMAND } from "src/models/text-command.model.js";
+import {
+  QUICK_REPLY,
+  TEXT_COMMAND,
+  TEXT_RESPONSES,
+} from "src/models/text-command.model.js";
+import { Queuing } from "src/services/queuing.service.js";
 import {
   sendMessage,
   sendMessageToRecipients,
 } from "src/services/send-message.service.js";
-
-const STARTER_MESSAGE = {
-  attachment: {
-    type: "template",
-    payload: {
-      template_type: "button",
-      text: "Bạn muốn trò chuyện với ai?",
-      buttons: [
-        {
-          type: "postback",
-          title: "Nam",
-          payload: TEXT_COMMAND.FIND_MALE,
-        },
-        {
-          type: "postback",
-          title: "Nữ",
-          payload: TEXT_COMMAND.FIND_FEMALE,
-        },
-        {
-          type: "postback",
-          title: "Khác",
-          payload: TEXT_COMMAND.FIND_OTHER,
-        },
-      ],
-    },
-  },
-};
-
-const QUICK_REPLY = {
-  text: "Bạn muốn trò chuyện với ai?",
-  quick_replies: [
-    {
-      content_type: "text",
-      title: "Nam",
-      payload: TEXT_COMMAND.FIND_ALL,
-    },
-    {
-      content_type: "text",
-      title: "Nữ",
-      payload: TEXT_COMMAND.FIND_ALL,
-    },
-    {
-      content_type: "text",
-      title: "Khác",
-      payload: TEXT_COMMAND.FIND_ALL,
-    },
-    {
-      content_type: "text",
-      title: "Tất cả",
-      payload: TEXT_COMMAND.FIND_ALL,
-    },
-  ],
-};
+import { REDIS_BUCKETS, Sessions } from "src/services/session.service.js";
 
 export async function commandHandler(messaging: Messaging) {
-  const command = messaging?.postback?.payload;
+  const command =
+    messaging?.postback?.payload || messaging?.message?.quick_reply?.payload;
 
   if (command === TEXT_COMMAND.GET_STARTED) {
     return sendMessage(messaging.sender.id, QUICK_REPLY);
@@ -72,138 +23,163 @@ export async function commandHandler(messaging: Messaging) {
 
   if (command === TEXT_COMMAND.FIND_MALE) {
     await handleFindCommand({
-      bucketToSave: "bucket:female",
-      bucketToFind: "bucket:male",
+      bucketToSave: REDIS_BUCKETS.female,
+      bucketToFinds: [REDIS_BUCKETS.male],
       senderId: messaging.sender.id,
     });
   }
 
   if (command === TEXT_COMMAND.FIND_FEMALE) {
     await handleFindCommand({
-      bucketToSave: "bucket:male",
-      bucketToFind: "bucket:female",
+      bucketToSave: REDIS_BUCKETS.male,
+      bucketToFinds: [REDIS_BUCKETS.female],
       senderId: messaging.sender.id,
     });
   }
 
   if (command === TEXT_COMMAND.FIND_OTHER) {
     await handleFindCommand({
-      bucketToSave: "bucket:other",
-      bucketToFind: "bucket:other",
+      bucketToSave: REDIS_BUCKETS.other,
+      bucketToFinds: [REDIS_BUCKETS.other],
       senderId: messaging.sender.id,
     });
   }
 
   if (command === TEXT_COMMAND.FIND_ALL) {
-    handleFindAllCommand(messaging.sender.id);
+    await handleFindAllCommand({
+      allBuckets: [
+        REDIS_BUCKETS.male,
+        REDIS_BUCKETS.female,
+        REDIS_BUCKETS.other,
+      ],
+      senderId: messaging.sender.id,
+    });
+  }
+
+  if (command === TEXT_COMMAND.END_CHAT) {
+    await handleEndChat({
+      senderId: messaging.sender.id,
+    });
   }
 }
 
 type HandleFindPeerCommand = {
   bucketToSave: string;
-  bucketToFind: string;
+  bucketToFinds: string[];
   senderId: string;
 };
 
 async function handleFindCommand({
   bucketToSave,
-  bucketToFind,
+  bucketToFinds,
   senderId,
-}: HandleFindPeerCommand) {
+}: HandleFindPeerCommand): Promise<void> {
+  const bucketToFind = bucketToFinds[0];
   const existingPeer = await redis.lindex(bucketToFind, -1);
 
   if (!existingPeer) {
-    await addToQueueIfNotExists(bucketToSave, senderId);
-    return sendMessage(senderId, {
-      text: "Đang tìm kiếm... Vui lòng đợi trong giây lát.",
+    await Queuing.addToQueueIfNotExists(bucketToSave, senderId);
+    await sendMessage(senderId, {
+      text: TEXT_RESPONSES.WAITING_FOR_PARTNER,
     });
-  }
-
-  if (existingPeer === senderId) {
-    logger.info("User tried to connect with themselves");
     return;
   }
 
-  const [userId1, userId2] = getUserOrderId([existingPeer, senderId]);
+  if (existingPeer === senderId) {
+    logger.info("User is already in the queue");
+    return;
+  }
 
   try {
-    await handleActiveSessions(userId1, userId2);
-    await createSession(userId1, userId2);
-    await updateQueues(bucketToFind, bucketToSave, existingPeer, senderId);
+    await Sessions.createSession(senderId, existingPeer);
+    await Queuing.removeFromAllQueues(senderId);
+    await Queuing.removeFromAllQueues(existingPeer);
+
+    return sendMessageToRecipients([existingPeer, senderId], {
+      text: TEXT_RESPONSES.FOUND_PARTNER,
+    });
   } catch (error) {
     logger.error("Error creating session:", error);
     return sendMessage(senderId, {
-      text: "Đã xảy ra lỗi khi tạo phiên trò chuyện. Vui lòng thử lại sau.",
+      text: TEXT_RESPONSES.ERRORS.CANNOT_CREATE_SESSION,
     });
   }
-
-  return sendMessageToRecipients([existingPeer, senderId], {
-    text: "Đã tìm thấy người bạn chat! Hãy bắt đầu trò chuyện nào.",
-  });
 }
 
-async function addToQueueIfNotExists(bucket: string, userId: string) {
-  const allUsersInQueue = await redis.lrange(bucket, 0, -1);
-  if (!allUsersInQueue.includes(userId)) {
-    await redis.rpush(bucket, userId);
+type HandleFindAllCommand = {
+  allBuckets: string[];
+  senderId: string;
+};
+async function handleFindAllCommand({
+  allBuckets,
+  senderId,
+}: HandleFindAllCommand): Promise<void> {
+  for (const bucket of allBuckets) {
+    const existingPeer = await redis.lindex(bucket, -1);
+
+    if (existingPeer) {
+      if (existingPeer === senderId) {
+        logger.info("User is already in the queue");
+        continue;
+      }
+
+      try {
+        await Sessions.createSession(senderId, existingPeer);
+        await Queuing.removeFromQueue(bucket, existingPeer);
+
+        return sendMessageToRecipients([existingPeer, senderId], {
+          text: TEXT_RESPONSES.FOUND_PARTNER,
+        });
+      } catch (error) {
+        logger.error("Error creating session:", error);
+        return sendMessage(senderId, {
+          text: TEXT_RESPONSES.ERRORS.CANNOT_CREATE_SESSION,
+        });
+      }
+    }
   }
+
+  await Promise.all(
+    allBuckets.map((bucket) => Queuing.addToQueueIfNotExists(bucket, senderId))
+  );
+
+  return sendMessage(senderId, {
+    text: TEXT_RESPONSES.WAITING_FOR_PARTNER,
+  });
 }
 
-async function handleActiveSessions(userId1: string, userId2: string) {
-  const existingActiveSessions = await db.query.sessions.findMany({
-    where: (sessions, { eq }) =>
-      eq(sessions.user1Id, userId1) &&
-      eq(sessions.user2Id, userId2) &&
-      eq(sessions.status, "active"),
-  });
+type HandleEndChatCommand = {
+  senderId: string;
+};
 
-  if (existingActiveSessions.length === 1) {
-    return sendMessageToRecipients([userId1, userId2], {
-      text: "Đã tìm thấy người bạn chat! Hãy bắt đầu trò chuyện nào.",
+async function handleEndChat({ senderId }: HandleEndChatCommand) {
+  const partnerId = await Sessions.getPartnerId(senderId);
+
+  if (!partnerId) {
+    await sendMessage(senderId, {
+      text: TEXT_RESPONSES.ERRORS.END_CHAT.NO_PARTNER,
+    });
+    return;
+  }
+
+  try {
+    await Sessions.deleteSession(senderId, partnerId);
+    await Queuing.removeFromAllQueues(senderId);
+    await Queuing.removeFromAllQueues(partnerId);
+
+    await sendMessage(senderId, {
+      text: TEXT_RESPONSES.END_CHAT.SELF_END,
+    });
+    await sendMessage(partnerId, {
+      text: TEXT_RESPONSES.END_CHAT.PARTNER_END,
+    });
+    setTimeout(async () => {
+      await sendMessageToRecipients([senderId, partnerId], QUICK_REPLY);
+    }, 1000);
+  } catch (error) {
+    logger.error("Error ending session:", error);
+    return sendMessage(senderId, {
+      text: TEXT_RESPONSES.ERRORS.END_CHAT.CAN_NOT_END_SESSION,
     });
   }
-
-  if (existingActiveSessions.length > 1) {
-    logger.error(
-      `Found multiple active sessions for users ${userId1} and ${userId2}`
-    );
-    await db
-      .update(sessions)
-      .set({ status: "ended" })
-      .where(
-        eq(sessions.user1Id, userId1) &&
-          eq(sessions.user2Id, userId2) &&
-          eq(sessions.status, "active")
-      );
-  }
-}
-
-async function createSession(userId1: string, userId2: string) {
-  await db.insert(sessions).values({
-    user1Id: userId1,
-    user2Id: userId2,
-  });
-
-  await redis.sadd(`${userId1}`, `${userId2}`);
-  await redis.sadd(`${userId2}`, `${userId1}`);
-}
-
-async function updateQueues(
-  bucketToFind: string,
-  bucketToSave: string,
-  existingPeer: string,
-  senderId: string
-) {
-  await redis.lrem(bucketToFind, 1, existingPeer);
-  await redis.lrem(bucketToSave, 1, senderId);
-}
-
-export function getUserOrderId(userIds: string[]): string[] {
-  return userIds
-    .map((id) => id.replace(/\D/g, "")) // keep only digits
-    .sort((a, b) => Number(b) - Number(a)); // sort descending
-}
-
-function handleFindAllCommand(senderId: string) {
-  // TODO: Implement this function
 }
